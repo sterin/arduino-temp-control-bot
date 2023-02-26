@@ -79,6 +79,11 @@ struct telegram_bot_api
         return send(chat_id, buf, keyboard, reply_to_message_id);
     }
 
+    void confirm()
+    {
+        bot.getUpdates(bot.last_message_received + 1);
+    }
+
     template<typename F>
     void foreach_message(F f)
     {

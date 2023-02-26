@@ -32,7 +32,7 @@ struct temperature
     {
       prev = sensors.getTempCByIndex(0);
       serial_printf("Temperature sensor: sample - %.2f\n", prev);
-      sensors.requestTemperatures();    
+      sensors.requestTemperatures();
       prev_time = millis();
     }
   }

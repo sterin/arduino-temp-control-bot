@@ -1,5 +1,8 @@
 #pragma once
 
+#include <HardwareSerial.h>
+#include <Arduino.h>
+
 void serial_setup()
 {
   Serial.begin(115200);
@@ -17,7 +20,3 @@ void serial_printf(const char* format, ...)
 
   va_end(args);
 }
-
-// #ifndef DEBUG
-// #define serial_printf(...)
-// #endif

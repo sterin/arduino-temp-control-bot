@@ -1,33 +1,14 @@
-
 #include "telegram_bot_api.h"
 #include "temperature.h"
 #include "temp_controller.h"
-#include "wifi_setup.h"
 #include "serial_setup.h"
+#include "lfs.h"
 
-#include "secrets.h"
+#include <WiFiManager.h>
+#include <memory>
 
-// secrets.h should contain the following:
-//
-// // WiFi
-//
-// #define WIFI_SSID "SSID"
-// #define WIFI_PASSWORD "PASSPHRASE"
-//
-// // Telegram
-//
-// #define TELEGRAM_BOT_TOKEN "TOKEN"
-// #define TELEGRAM_CHAT_ID "CHAT_ID"
-
-// GPIOs
-
-#ifdef BOARD_TH10
-    #define RELAY_GPIO 12
-    #define ONEWIRE_GPIO 9
-#else
-    #define RELAY_GPIO 5
-    #define ONEWIRE_GPIO 10
-#endif
+#define RELAY_GPIO 5
+#define ONEWIRE_GPIO 10
 
 // Temperature
 
@@ -47,26 +28,25 @@ struct state_machine
 
     static constexpr float CONTROL_DELTA{1.0};
 
-#if 1
-    static constexpr float HOT_TEMP{102.0};
-    static constexpr float COOL_TEMP{65.0};
-    static constexpr float MAX_TEMP{120.0};
+    static constexpr float DEFAULT_HOT_TEMP{102.0};
+    static constexpr float DEFAULT_COOL_TEMP{72.0};
+    static constexpr float DEFAULT_MAX_TEMP{120.0};
     
-    static constexpr unsigned long LUBRICATION_TIME{ 1*3600*1000 };
-    static constexpr unsigned long TIMEOUT{ 3*3600*1000 };
-#else
-    static constexpr float HOT_TEMP{40.0};
-    static constexpr float COOL_TEMP{25.0};
-    static constexpr float MAX_TEMP{75.0};
-    
-    static constexpr unsigned long LUBRICATION_TIME{ 30*1000 };
-    static constexpr unsigned long TIMEOUT{ 120*1000 };
-#endif
+    static constexpr unsigned long DEFAULT_LUBRICATION_TIME{ 1*3600*1000 };
+    static constexpr unsigned long DEFAULT_TIMEOUT{ 3*3600*1000 };
 
-    state_machine(const char* token, uint8_t onewire_gpio, uint8_t relay_gpio) :
+    static float HOT_TEMP;
+    static float COOL_TEMP;
+    static float MAX_TEMP;
+    
+    static unsigned long LUBRICATION_TIME;
+    static unsigned long TIMEOUT;
+
+    state_machine(const char* token, const char* chat_id, uint8_t onewire_gpio, uint8_t relay_gpio) :
         temp{ onewire_gpio, 12 },
         tctrl{ temp, relay_gpio, CONTROL_DELTA },
-        api{ token }
+        api{ token },
+        chat_id{ chat_id }
     {
     }
 
@@ -86,7 +66,7 @@ struct state_machine
 
         api.foreach_message([&](const telegramMessage& m)
         {
-            if( m.chat_id != TELEGRAM_CHAT_ID )
+            if( m.chat_id != chat_id )
             {
                 return;
             }
@@ -111,6 +91,14 @@ struct state_machine
             {
                 cooldown( m.message_id );
             }
+            else if( m.text == "/reconfigure")
+            {
+                serial_printf("Reconfigure!");
+                api.confirm();
+                delay(3000);
+                ESP.eraseConfig();
+                ESP.restart();
+            }
         });
 
         update_temperature();
@@ -131,7 +119,7 @@ struct state_machine
             notify(message_id, "Warning: state is not HOT [%.2f]", temp.temp());
         }
 
-        notify(message_id, "Lubricating.");
+        notify(message_id, "Lubricating: [%.2f C]", temp.temp());
         state = state_type::LUBRICATING;
         set_timeout(LUBRICATION_TIME);
         tctrl.start(HOT_TEMP);
@@ -208,7 +196,7 @@ struct state_machine
         va_list args;
         va_start(args, format);
 
-        api.sendvf(TELEGRAM_CHAT_ID, keyboard, message_id, format, args);
+        api.sendvf(chat_id, keyboard, message_id, format, args);
 
         va_end(args);
     }
@@ -232,9 +220,17 @@ struct state_machine
     temperature temp;
     temp_controller tctrl;
     telegram_bot_api api;
+    const char* chat_id;
 
     static const String keyboard;
 };
+
+float state_machine::HOT_TEMP{state_machine::DEFAULT_HOT_TEMP};
+float state_machine::COOL_TEMP{state_machine::DEFAULT_COOL_TEMP};
+float state_machine::MAX_TEMP{state_machine::DEFAULT_MAX_TEMP};
+
+unsigned long state_machine::LUBRICATION_TIME{state_machine::DEFAULT_LUBRICATION_TIME};
+unsigned long state_machine::TIMEOUT{state_machine::DEFAULT_TIMEOUT};
 
 const String state_machine::keyboard = R"JSON(
 [
@@ -261,18 +257,139 @@ const char* state_machine::STATE_NAMES[] = {
         "COOL"
     };
 
-state_machine fsm{TELEGRAM_BOT_TOKEN, ONEWIRE_GPIO, RELAY_GPIO};
+std::unique_ptr<state_machine> fsm;
+
+const uint32_t MAGIC = 0x01234567;
+
+struct configuration
+{
+    uint32_t magic;
+    uint16_t version;
+
+    char token[64];
+    char chat_id[16];
+
+    float max_temp;
+    float hot_temp;
+    float cool_temp;
+
+    float lubrication_time;
+    float timeout;
+};
+
+template<int N>
+WiFiManagerParameter add_param(WiFiManager& wm, const char* id, const char* label, const char (&val)[N])
+{
+    WiFiManagerParameter param(id, label, val, N-1);
+    wm.addParameter(&param);
+    return param;
+}
+
+WiFiManagerParameter add_param(WiFiManager& wm, const char* id, const char* label, float val)
+{
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%.1f", val);
+
+    return add_param(wm, id, label, buf);
+}
+
+template<int N>
+void param_value(WiFiManagerParameter& param, char (&cur_val)[N], bool& changed)
+{
+    const char* val = param.getValue();
+
+    if( strncmp(val, cur_val, N) != 0 )
+    {
+        strncpy(cur_val, val, N);
+        changed = true;
+    }
+}
+
+void param_value(WiFiManagerParameter& param, float& cur_val, bool& changed)
+{
+    const char* sval = param.getValue();
+    float val;
+    
+    if( sscanf(sval, "%f", & val) != 1 && val != cur_val )
+    {
+        cur_val = val;
+        changed = true;
+    }
+}
+
+configuration conf;
 
 void setup()
 {
     serial_setup();
-    wifi_setup(WIFI_SSID, WIFI_PASSWORD);
-    fsm.setup();
 
+    littlefs lfs;
+    bool should_save = false;
+
+    conf = lfs.load<configuration>("/config.data");
+
+    if( conf.magic != MAGIC )
+    {
+        conf = configuration{
+            .magic{MAGIC},
+            .version{1},
+            .token{0},
+            .chat_id{0},
+            .max_temp{120},
+            .hot_temp{102},
+            .cool_temp{72},
+            .lubrication_time{1},
+            .timeout{3}
+        };
+
+        should_save = true;
+    }
+
+    WiFiManager wifiManager;
+
+    auto token = add_param(wifiManager, "token", "Telegram Bot Token", conf.token);
+    auto chat_id = add_param(wifiManager, "chat_id", "Telegram Chat ID", conf.chat_id);
+    auto max_temp = add_param(wifiManager, "max_temp", "Max  Temperature", conf.max_temp);
+    auto hot_temp = add_param(wifiManager, "hot_temp", "Hot  Temperature", conf.hot_temp);
+    auto cool_temp = add_param(wifiManager, "cool_temp", "Cool  Temperature", conf.cool_temp);
+    auto lubrication_time = add_param(wifiManager, "lubrication_time", "Lubrication Timeout", conf.lubrication_time);
+    auto timeout = add_param(wifiManager, "timeout", "Timeout", conf.timeout);
+
+    wifiManager.setSaveConfigCallback([&]()
+    {
+        param_value(token, conf.token, should_save);
+        param_value(chat_id, conf.chat_id, should_save);
+        param_value(max_temp, conf.max_temp, should_save);
+        param_value(hot_temp, conf.hot_temp, should_save);
+        param_value(cool_temp, conf.cool_temp, should_save);
+        param_value(lubrication_time, conf.lubrication_time, should_save);
+        param_value(timeout, conf.timeout, should_save);
+    });
+
+    if( !wifiManager.autoConnect("TEMP_CTRL") )
+    {
+        Serial.println("ERROR: failed to connect and hit timeout");
+        delay(3000);
+        ESP.restart();
+    }
+
+    lfs.save("/config.data", conf);
+
+    Serial.println("Web Server started:" + WiFi.localIP().toString());
+
+    state_machine::MAX_TEMP = conf.max_temp;
+    state_machine::HOT_TEMP = conf.hot_temp;
+    state_machine::COOL_TEMP = conf.cool_temp;
+
+    state_machine::LUBRICATION_TIME = conf.lubrication_time * 3600 * 1000;
+    state_machine::TIMEOUT = conf.timeout * 3600 * 1000;
+
+    fsm = std::make_unique<state_machine>(conf.token, conf.chat_id, ONEWIRE_GPIO, RELAY_GPIO);
+    fsm->setup();
 }
 
 void loop()
 {
-    fsm.loop();
+    fsm->loop();
     delay(50);
 }
