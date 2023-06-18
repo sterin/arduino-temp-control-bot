@@ -112,6 +112,8 @@ struct state_machine
                 erase_wifi_config();
 
                 delay(1000);
+
+                ESP.restart();
             }
         });
 
@@ -292,19 +294,21 @@ struct configuration
 };
 
 template<int N>
-WiFiManagerParameter add_param(WiFiManager& wm, const char* id, const char* label, const char (&val)[N])
+WiFiManagerParameter add_param(WiFiManager& wm, const char* id, const char* label, const char (&val)[N], bool password=false)
 {
-    WiFiManagerParameter param(id, label, val, N-1);
+    const char *attr = password ? "type='password'" : nullptr;
+
+    WiFiManagerParameter param(id, label, val, N-1, attr);
     wm.addParameter(&param);
     return param;
 }
 
-WiFiManagerParameter add_param(WiFiManager& wm, const char* id, const char* label, float val)
+WiFiManagerParameter add_param(WiFiManager& wm, const char* id, const char* label, float val, bool password=false)
 {
     char buf[16];
     snprintf(buf, sizeof(buf), "%.1f", val);
 
-    return add_param(wm, id, label, buf);
+    return add_param(wm, id, label, buf, password);
 }
 
 template<int N>
@@ -361,8 +365,8 @@ void setup()
 
     WiFiManager wifiManager;
 
-    auto token = add_param(wifiManager, "token", "Telegram Bot Token", conf.token);
-    auto chat_id = add_param(wifiManager, "chat_id", "Telegram Chat ID", conf.chat_id);
+    auto token = add_param(wifiManager, "token", "Telegram Bot Token", conf.token, true);
+    auto chat_id = add_param(wifiManager, "chat_id", "Telegram Chat ID", conf.chat_id, true);
     auto max_temp = add_param(wifiManager, "max_temp", "Max  Temperature", conf.max_temp);
     auto hot_temp = add_param(wifiManager, "hot_temp", "Hot  Temperature", conf.hot_temp);
     auto cool_temp = add_param(wifiManager, "cool_temp", "Cool  Temperature", conf.cool_temp);
