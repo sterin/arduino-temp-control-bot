@@ -1,5 +1,6 @@
 #pragma once
 
+#include <WiFi.h>
 #include <WiFiClientSecure.h>
 #include <UniversalTelegramBot.h>
 
@@ -16,7 +17,7 @@ struct telegram_bot_api
         
     void setup()
     {
-        secured_client.setTrustAnchors(&cert); // Add root certificate for api.telegram.org
+        secured_client.setCACert(TELEGRAM_CERTIFICATE_ROOT); // Add root certificate for api.telegram.org
 
         serial_printf("Telegram Bot API: Retrieving time ");
         
@@ -106,7 +107,6 @@ struct telegram_bot_api
 
     const char* token;
 
-    X509List cert{TELEGRAM_CERTIFICATE_ROOT};
     WiFiClientSecure secured_client;
     UniversalTelegramBot bot{token, secured_client};
     unsigned long bot_lasttime;

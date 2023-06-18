@@ -6,7 +6,7 @@ struct littlefs
 {
     littlefs()
     {
-        LittleFS.begin();
+        LittleFS.begin(true);
     }
 
     ~littlefs()
@@ -35,7 +35,7 @@ struct littlefs
     {
         if( auto f = LittleFS.open(fname, "w") )
         {
-            f.write(reinterpret_cast<const char*>(&data), sizeof(T));
+            f.write(reinterpret_cast<const uint8_t*>(&data), sizeof(T));
         }
     }
 };

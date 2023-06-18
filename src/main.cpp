@@ -4,11 +4,22 @@
 #include "serial_setup.h"
 #include "lfs.h"
 
+#include <esp_wifi.h>
 #include <WiFiManager.h>
+
 #include <memory>
 
-#define RELAY_GPIO 5
-#define ONEWIRE_GPIO 10
+#define RELAY_GPIO 19
+#define ONEWIRE_GPIO 6
+
+void erase_wifi_config()
+{
+    wifi_init_config_t wicfg = WIFI_INIT_CONFIG_DEFAULT();
+    esp_wifi_init(&wicfg);
+
+    wifi_config_t wcfg{0};
+    esp_wifi_set_config(WIFI_IF_STA, &wcfg);
+}
 
 // Temperature
 
@@ -95,9 +106,12 @@ struct state_machine
             {
                 serial_printf("Reconfigure!");
                 api.confirm();
+                
                 delay(3000);
-                ESP.eraseConfig();
-                ESP.restart();
+
+                erase_wifi_config();
+
+                delay(1000);
             }
         });
 
@@ -310,7 +324,7 @@ void param_value(WiFiManagerParameter& param, float& cur_val, bool& changed)
     const char* sval = param.getValue();
     float val;
     
-    if( sscanf(sval, "%f", & val) != 1 && val != cur_val )
+    if( sscanf(sval, "%f", &val) == 1 && val != cur_val )
     {
         cur_val = val;
         changed = true;
@@ -331,15 +345,15 @@ void setup()
     if( conf.magic != MAGIC )
     {
         conf = configuration{
-            .magic{MAGIC},
-            .version{1},
+            .magic=MAGIC,
+            .version=0,
             .token{0},
             .chat_id{0},
-            .max_temp{120},
-            .hot_temp{102},
-            .cool_temp{72},
-            .lubrication_time{1},
-            .timeout{3}
+            .max_temp=120,
+            .hot_temp=102,
+            .cool_temp=72,
+            .lubrication_time=1,
+            .timeout=3
         };
 
         should_save = true;
@@ -373,7 +387,10 @@ void setup()
         ESP.restart();
     }
 
-    lfs.save("/config.data", conf);
+    if( should_save )
+    {
+      lfs.save("/config.data", conf);
+    }
 
     Serial.println("Web Server started:" + WiFi.localIP().toString());
 
